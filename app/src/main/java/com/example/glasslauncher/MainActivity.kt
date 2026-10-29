@@ -30,12 +30,32 @@ class MainActivity : Activity() {
     private lateinit var prefs: SharedPreferences
     private lateinit var video: VideoView
     private lateinit var dimView: View
-    private lateinit var row: LinearLayout
-    private lateinit var scroller: HorizontalScrollView
+    private lateinit var titleView: TextView
+    private lateinit var labelA: TextView
+    private lateinit var scrollA: HorizontalScrollView
+    private lateinit var rowA: LinearLayout
+    private lateinit var scrollB: HorizontalScrollView
+    private lateinit var rowB: LinearLayout
     private var appsKey = ""
     private var loadedPath: String? = null
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun makeRow(): Pair<HorizontalScrollView, LinearLayout> {
+        val l = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+        }
+        val s = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            clipToPadding = false
+            clipChildren = false
+            setPadding(dp(48), dp(12), dp(48), dp(12))
+            addView(l)
+        }
+        return s to l
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,6 +76,14 @@ class MainActivity : Activity() {
         dimView = View(this)
         root.addView(dimView, FrameLayout.LayoutParams(-1, -1))
 
+        // Dunkler Verlauf unten, damit die Reihen gut lesbar sind
+        val scrim = View(this)
+        scrim.background = GradientDrawable(
+            GradientDrawable.Orientation.BOTTOM_TOP,
+            intArrayOf(0xE6000000.toInt(), 0x00000000)
+        )
+        root.addView(scrim, FrameLayout.LayoutParams(-1, resources.displayMetrics.heightPixels * 7 / 10, Gravity.BOTTOM))
+
         val clock = TextClock(this).apply {
             format24Hour = "HH:mm"; format12Hour = "HH:mm"
             textSize = 30f
@@ -66,21 +94,26 @@ class MainActivity : Activity() {
             topMargin = dp(40); marginEnd = dp(64)
         })
 
-        row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            clipChildren = false
+        titleView = TextView(this).apply {
+            textSize = 34f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            maxLines = 1
         }
-        scroller = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            clipToPadding = false
-            clipChildren = false
-            setPadding(dp(64), dp(28), dp(64), dp(28))
-            addView(row)
+        labelA = TextView(this).apply {
+            text = "Favoriten & Zuletzt"
+            textSize = 13f
+            setTextColor(0xB3FFFFFF.toInt())
         }
-        root.addView(scroller, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
-            bottomMargin = dp(40)
-        })
+        val a = makeRow(); scrollA = a.first; rowA = a.second
+        val b = makeRow(); scrollB = b.first; rowB = b.second
+
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        panel.addView(titleView, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(48) })
+        panel.addView(labelA, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(48); topMargin = dp(6) })
+        panel.addView(scrollA, LinearLayout.LayoutParams(-1, -2))
+        panel.addView(scrollB, LinearLayout.LayoutParams(-1, -2))
+        root.addView(panel, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { bottomMargin = dp(16) })
 
         setContentView(root)
         applyLook()
@@ -102,8 +135,9 @@ class MainActivity : Activity() {
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
-        scroller.smoothScrollTo(0, 0)
-        row.getChildAt(0)?.requestFocus()
+        scrollA.smoothScrollTo(0, 0)
+        scrollB.smoothScrollTo(0, 0)
+        focusFirst()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
@@ -117,6 +151,11 @@ class MainActivity : Activity() {
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
             View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
             View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+    }
+
+    private fun focusFirst() {
+        val target = if (rowA.childCount > 0) rowA else rowB
+        target.getChildAt(0)?.requestFocus()
     }
 
     // ---------- Wallpaper & Look ----------
@@ -135,12 +174,18 @@ class MainActivity : Activity() {
     }
 
     // "Liquid Glass" ohne echten Blur (spart GPU): transparenter Verlauf + heller Rand
-    private fun glass(focused: Boolean) = GradientDrawable(
+    private fun glass(focused: Boolean, r: Int) = GradientDrawable(
         GradientDrawable.Orientation.TOP_BOTTOM,
         if (focused) intArrayOf(0x78FFFFFF, 0x3AFFFFFF) else intArrayOf(0x40FFFFFF, 0x14FFFFFF)
     ).apply {
-        cornerRadius = dp(26).toFloat()
-        setStroke(dp(if (focused) 2 else 1), if (focused) 0xCCFFFFFF.toInt() else 0x40FFFFFF)
+        cornerRadius = dp(r).toFloat()
+        setStroke(dp(1), 0x40FFFFFF)
+    }
+
+    private fun ring(r: Int) = GradientDrawable().apply {
+        setColor(Color.TRANSPARENT)
+        cornerRadius = dp(r).toFloat()
+        setStroke(dp(3), 0xF2FFFFFF.toInt())
     }
 
     // ---------- Apps ----------
@@ -155,71 +200,118 @@ class MainActivity : Activity() {
         return out.values.toList()
     }
 
+    private fun recents(): List<String> =
+        prefs.getString("recent", "")!!.split(",").filter { it.isNotEmpty() }
+
     private fun rebuild(force: Boolean) {
         val pm = packageManager
         val hidden = prefs.getStringSet("hidden", emptySet())!!
         val favs = prefs.getStringSet("favs", emptySet())!!
-        val showNames = prefs.getBoolean("names", true)
-        val apps = loadApps()
+        val showA = prefs.getBoolean("rowA", true)
+
+        val all = loadApps()
             .filter { it.activityInfo.packageName !in hidden }
             .map { it to it.loadLabel(pm).toString() }
-            .sortedWith(compareBy({ it.first.activityInfo.packageName !in favs }, { it.second.lowercase() }))
-        val key = apps.joinToString { it.first.activityInfo.packageName } + showNames
+            .sortedBy { it.second.lowercase() }
+        val byPkg = all.associateBy { it.first.activityInfo.packageName }
+
+        val featured = (all.filter { it.first.activityInfo.packageName in favs } +
+            recents().mapNotNull { byPkg[it] }.filter { it.first.activityInfo.packageName !in favs })
+            .take(10)
+
+        val key = all.joinToString { it.first.activityInfo.packageName } + "|" +
+            featured.joinToString { it.first.activityInfo.packageName } + showA
         if (!force && key == appsKey) return
         appsKey = key
 
-        row.removeAllViews()
-        for ((ri, label) in apps) {
-            val pkg = ri.activityInfo.packageName
-            row.addView(tile(label, ri.loadIcon(pm), null, showNames,
-                { launch(pkg) }, { appMenu(pkg, label) }))
-        }
-        row.addView(tile("Einstellungen", null, "⚙", showNames, { settings() }, null))
-        row.getChildAt(0)?.requestFocus()
-    }
+        rowA.removeAllViews()
+        rowB.removeAllViews()
 
-    private fun tile(
-        label: String, icon: Drawable?, symbol: String?, showName: Boolean,
-        onClick: () -> Unit, longAction: (() -> Unit)?
-    ): View {
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dp(18), dp(20), dp(18), dp(if (showName) 14 else 20))
-            isFocusable = true
-            isClickable = true
-            background = glass(false)
-            layoutParams = LinearLayout.LayoutParams(dp(140), -2).apply { marginEnd = dp(20) }
-            setOnClickListener { onClick() }
-            if (longAction != null) setOnLongClickListener { longAction(); true }
-            setOnFocusChangeListener { v, focused ->
-                v.background = glass(focused)
-                val s = if (focused) 1.1f else 1f
-                v.animate().scaleX(s).scaleY(s).setDuration(120).start()
+        if (showA) {
+            for ((ri, label) in featured) {
+                val pkg = ri.activityInfo.packageName
+                val banner = ri.activityInfo.loadBanner(pm) ?: ri.activityInfo.applicationInfo.loadBanner(pm)
+                rowA.addView(bannerTile(label, banner, ri.loadIcon(pm), { launch(pkg) }, { appMenu(pkg, label) }))
             }
         }
+        val visA = if (rowA.childCount > 0) View.VISIBLE else View.GONE
+        scrollA.visibility = visA
+        labelA.visibility = visA
+
+        for ((ri, label) in all) {
+            val pkg = ri.activityInfo.packageName
+            rowB.addView(iconTile(label, ri.loadIcon(pm), null, { launch(pkg) }, { appMenu(pkg, label) }))
+        }
+        rowB.addView(iconTile("Einstellungen", null, "⚙", { settings() }, null))
+        focusFirst()
+    }
+
+    private fun decorate(
+        v: FrameLayout, label: String, r: Int, scale: Float,
+        onClick: () -> Unit, longAction: (() -> Unit)?
+    ) {
+        v.isFocusable = true
+        v.isClickable = true
+        v.background = glass(false, r)
+        v.clipToOutline = true
+        v.setOnClickListener { onClick() }
+        if (longAction != null) v.setOnLongClickListener { longAction(); true }
+        v.setOnFocusChangeListener { view, focused ->
+            view.background = glass(focused, r)
+            (view as FrameLayout).foreground = if (focused) ring(r) else null
+            val s = if (focused) scale else 1f
+            view.animate().scaleX(s).scaleY(s).setDuration(120).start()
+            if (focused) titleView.text = label
+        }
+    }
+
+    // Kleine App-Kachel (abgerundetes Quadrat)
+    private fun iconTile(
+        label: String, icon: Drawable?, symbol: String?,
+        onClick: () -> Unit, longAction: (() -> Unit)?
+    ): View {
+        val card = FrameLayout(this).apply {
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            layoutParams = LinearLayout.LayoutParams(dp(76), dp(76)).apply { marginEnd = dp(16) }
+        }
         if (icon != null) {
-            card.addView(ImageView(this).apply { setImageDrawable(icon) }, LinearLayout.LayoutParams(dp(84), dp(84)))
+            card.addView(ImageView(this).apply { setImageDrawable(icon) }, FrameLayout.LayoutParams(-1, -1))
         } else {
             card.addView(TextView(this).apply {
-                text = symbol; textSize = 48f; gravity = Gravity.CENTER
+                text = symbol; textSize = 32f; gravity = Gravity.CENTER
                 setTextColor(Color.WHITE)
-            }, LinearLayout.LayoutParams(dp(84), dp(84)))
+            }, FrameLayout.LayoutParams(-1, -1))
         }
-        if (showName) {
-            card.addView(TextView(this).apply {
-                text = label; textSize = 14f; maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                gravity = Gravity.CENTER
-                setTextColor(0xEEFFFFFF.toInt())
-            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        decorate(card, label, 18, 1.15f, onClick, longAction)
+        return card
+    }
+
+    // Große 16:9-Kachel (App-Banner)
+    private fun bannerTile(
+        label: String, banner: Drawable?, icon: Drawable,
+        onClick: () -> Unit, longAction: (() -> Unit)?
+    ): View {
+        val card = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(200), dp(113)).apply { marginEnd = dp(20) }
         }
+        if (banner != null) {
+            card.addView(ImageView(this).apply {
+                setImageDrawable(banner); scaleType = ImageView.ScaleType.CENTER_CROP
+            }, FrameLayout.LayoutParams(-1, -1))
+        } else {
+            card.addView(ImageView(this).apply { setImageDrawable(icon) },
+                FrameLayout.LayoutParams(dp(64), dp(64), Gravity.CENTER))
+        }
+        decorate(card, label, 16, 1.08f, onClick, longAction)
         return card
     }
 
     private fun launch(pkg: String) {
         val i = packageManager.getLeanbackLaunchIntentForPackage(pkg)
             ?: packageManager.getLaunchIntentForPackage(pkg) ?: return
+        val list = recents().toMutableList()
+        list.remove(pkg); list.add(0, pkg)
+        prefs.edit().putString("recent", list.take(8).joinToString(",")).apply()
         try { startActivity(i) } catch (_: Exception) { }
     }
 
@@ -232,7 +324,7 @@ class MainActivity : Activity() {
     private fun appMenu(pkg: String, label: String) {
         val isFav = pkg in prefs.getStringSet("favs", emptySet())!!
         AlertDialog.Builder(this).setTitle(label)
-            .setItems(arrayOf(if (isFav) "Von Favoriten entfernen" else "Zu Favoriten (ganz vorne)",
+            .setItems(arrayOf(if (isFav) "Von Favoriten entfernen" else "Zu Favoriten",
                 "Ausblenden", "Deinstallieren")) { _, i ->
                 when (i) {
                     0 -> toggle("favs", pkg)
@@ -248,11 +340,11 @@ class MainActivity : Activity() {
     private fun settings() {
         val wp = prefs.getBoolean("wallpaper", true)
         val dim = prefs.getInt("dim", 20)
-        val names = prefs.getBoolean("names", true)
+        val showA = prefs.getBoolean("rowA", true)
         val items = arrayOf(
             "Live-Wallpaper: " + if (wp) "An" else "Aus",
             "Abdunkeln: $dim %",
-            "App-Namen: " + if (names) "An" else "Aus",
+            "Favoriten-Reihe: " + if (showA) "An" else "Aus",
             "Ausgeblendete Apps zurücksetzen",
             "Fire-TV-Einstellungen öffnen"
         )
@@ -260,7 +352,7 @@ class MainActivity : Activity() {
             when (i) {
                 0 -> prefs.edit().putBoolean("wallpaper", !wp).apply()
                 1 -> prefs.edit().putInt("dim", (dim + 20) % 80).apply()
-                2 -> prefs.edit().putBoolean("names", !names).apply()
+                2 -> prefs.edit().putBoolean("rowA", !showA).apply()
                 3 -> prefs.edit().remove("hidden").apply()
                 4 -> startActivity(Intent(Settings.ACTION_SETTINGS))
             }
